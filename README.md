@@ -1,10 +1,9 @@
-# Experimentaciones
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Detector de Nariz y Música Doria (Corregido)</title>
+    <title>Detector de Nariz y Música Doria Mejorado con Depuración</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/posenet"></script>
     <style>
@@ -18,30 +17,35 @@
             margin: 0;
             background-color: #f0f0f0;
         }
-        h1 {
-            color: #333;
-        }
+        h1 { color: #333; }
         #videoContainer {
             position: relative;
             margin-bottom: 20px;
         }
-        #output, #noteOutput {
+        #video {
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .overlay {
             position: absolute;
             background-color: rgba(255, 255, 255, 0.7);
             padding: 5px;
             border-radius: 5px;
+            font-size: 14px;
         }
-        #output {
-            top: 10px;
-            left: 10px;
-        }
-        #noteOutput {
-            top: 10px;
-            right: 10px;
+        #output { top: 10px; left: 10px; }
+        #noteOutput { top: 10px; right: 10px; }
+        #debugOutput { 
+            bottom: 10px; 
+            left: 10px; 
+            max-height: 150px; 
+            overflow-y: auto; 
+            width: 300px;
         }
         #status {
             margin-top: 20px;
             font-weight: bold;
+            text-align: center;
         }
         .note-section {
             position: absolute;
@@ -60,11 +64,12 @@
     </style>
 </head>
 <body>
-    <h1>Detector de Nariz y Música Doria (Corregido)</h1>
+    <h1>Detector de Nariz y Música Doria Mejorado con Depuración</h1>
     <div id="videoContainer">
         <video id="video" width="640" height="480" autoplay></video>
-        <div id="output"></div>
-        <div id="noteOutput"></div>
+        <div id="output" class="overlay"></div>
+        <div id="noteOutput" class="overlay"></div>
+        <div id="debugOutput" class="overlay"></div>
         <div id="laSection" class="note-section" style="top: 0;">La</div>
         <div id="solSection" class="note-section" style="top: 20%;">Sol</div>
         <div id="faSection" class="note-section" style="top: 40%;">Fa</div>
@@ -77,52 +82,67 @@
         const video = document.getElementById('video');
         const output = document.getElementById('output');
         const noteOutput = document.getElementById('noteOutput');
+        const debugOutput = document.getElementById('debugOutput');
         const status = document.getElementById('status');
         const sections = ['laSection', 'solSection', 'faSection', 'miSection', 'reSection'];
-        let model, ctx, audioContext, oscillator, gainNode;
+        
+        let model, midiAccess, midiOutput;
+        let currentNote = null;
+        let isDetecting = false;
 
         const notes = {
-            'La': 440.00,  // A4
-            'Sol': 392.00, // G4
-            'Fa': 349.23,  // F4
-            'Mi': 329.63,  // E4
-            'Re': 293.66   // D4
+            'La': 69, 'Sol': 67, 'Fa': 65, 'Mi': 64, 'Re': 62
         };
 
-        // Inicializar el contexto de audio
-        function initAudio() {
-            audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            oscillator = audioContext.createOscillator();
-            gainNode = audioContext.createGain();
-            oscillator.connect(gainNode);
-            gainNode.connect(audioContext.destination);
-            oscillator.start();
-            gainNode.gain.setValueAtTime(0, audioContext.currentTime); // Inicialmente sin sonido
+        async function initMIDI() {
+            try {
+                midiAccess = await navigator.requestMIDIAccess();
+                const outputs = Array.from(midiAccess.outputs.values());
+                if (outputs.length > 0) {
+                    midiOutput = outputs[0];
+                    updateStatus('MIDI listo y modelo cargado. Detectando nariz...');
+                } else {
+                    throw new Error('No se encontró salida MIDI.');
+                }
+            } catch (error) {
+                updateStatus(`Error MIDI: ${error.message}`);
+            }
         }
 
-        // Reproducir nota
-        function playNote(frequency, noteName) {
-            oscillator.frequency.setValueAtTime(frequency, audioContext.currentTime);
-            gainNode.gain.setTargetAtTime(0.5, audioContext.currentTime, 0.01); // Suavizar el inicio del sonido
-            noteOutput.textContent = `Nota: ${noteName}`;
+        function sendMIDIMessage(noteNumber, velocity, type) {
+            if (midiOutput) {
+                midiOutput.send([type, noteNumber, velocity]);
+            }
+        }
+
+        function playNoteMidi(noteNumber) {
+            if (currentNote !== noteNumber) {
+                stopNoteMidi(currentNote);
+                sendMIDIMessage(noteNumber, 127, 0x90); // Note on
+                updateNoteOutput(`Nota: ${Object.keys(notes).find(key => notes[key] === noteNumber)}`);
+                currentNote = noteNumber;
+                updateSectionColors(noteNumber);
+            }
+        }
+
+        function stopNoteMidi(noteNumber) {
+            if (noteNumber !== null) {
+                sendMIDIMessage(noteNumber, 0, 0x80); // Note off
+                updateNoteOutput('Nota: Ninguna');
+                currentNote = null;
+                updateSectionColors(null);
+            }
+        }
+
+        function updateSectionColors(activeNote) {
             sections.forEach(section => {
-                document.getElementById(section).style.backgroundColor = 
-                    section === `${noteName.toLowerCase()}Section` 
-                        ? 'rgba(0, 0, 0, 0.1)' 
-                        : 'transparent';
+                const sectionElement = document.getElementById(section);
+                sectionElement.style.backgroundColor = section === `${activeNote}Section` 
+                    ? 'rgba(0, 0, 0, 0.1)' 
+                    : 'transparent';
             });
         }
 
-        // Detener nota
-        function stopNote() {
-            gainNode.gain.setTargetAtTime(0, audioContext.currentTime, 0.01); // Suavizar el final del sonido
-            noteOutput.textContent = 'Nota: Ninguna';
-            sections.forEach(section => {
-                document.getElementById(section).style.backgroundColor = 'transparent';
-            });
-        }
-
-        // Inicializar la cámara
         async function setupCamera() {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -131,12 +151,11 @@
                     video.onloadedmetadata = () => resolve(video);
                 });
             } catch (error) {
-                status.textContent = 'Error al acceder a la cámara: ' + error.message;
+                updateStatus(`Error de cámara: ${error.message}`);
                 throw error;
             }
         }
 
-        // Cargar el modelo
         async function loadModel() {
             try {
                 model = await posenet.load({
@@ -145,50 +164,72 @@
                     inputResolution: { width: 640, height: 480 },
                     multiplier: 0.75
                 });
-                status.textContent = 'Modelo cargado. Detectando nariz...';
+                updateStatus('Modelo cargado. Detectando nariz...');
             } catch (error) {
-                status.textContent = 'Error al cargar el modelo: ' + error.message;
+                updateStatus(`Error de modelo: ${error.message}`);
                 throw error;
             }
         }
 
-        // Detectar pose
         async function detectPose() {
+            if (!isDetecting) return;
+            
             const pose = await model.estimateSinglePose(video, {
                 flipHorizontal: false
             });
             
-            if (pose.score > 0.2) {
+            updateDebugOutput(JSON.stringify(pose, null, 2));
+
+            if (pose.score > 0.3) {  // Reducido el umbral de confianza general
                 const nose = pose.keypoints.find(point => point.part === 'nose');
-                if (nose.score > 0.5) {
+                if (nose && nose.score > 0.3) {  // Reducido el umbral de confianza para la nariz
                     const y = nose.position.y;
-                    const height = video.height;
-                    const section = Math.floor((y / height) * 5);
+                    const section = Math.floor((y / video.height) * 5);
                     const noteName = Object.keys(notes)[section];
-                    output.textContent = `Nariz detectada en sección: ${noteName}`;
-                    playNote(notes[noteName], noteName);
+                    const midiNote = notes[noteName];
+                    updateOutput(`Nariz detectada en sección: ${noteName} (Confianza: ${nose.score.toFixed(2)})`);
+                    playNoteMidi(midiNote);
                 } else {
-                    output.textContent = 'Nariz no detectada claramente';
-                    stopNote();
+                    handleNoseNotDetected(nose ? nose.score : 0);
                 }
             } else {
-                output.textContent = 'Pose no detectada';
-                stopNote();
+                handleNoseNotDetected(pose.score);
             }
+
+            requestAnimationFrame(detectPose);
         }
 
-        // Bucle principal
-        async function runDetection() {
-            await detectPose();
-            requestAnimationFrame(runDetection);
+        function handleNoseNotDetected(score) {
+            updateOutput(`Nariz no detectada claramente (Confianza: ${score.toFixed(2)})`);
+            stopNoteMidi(currentNote);
         }
 
-        // Inicializar la aplicación
+        function updateStatus(message) {
+            status.textContent = message;
+        }
+
+        function updateOutput(message) {
+            output.textContent = message;
+        }
+
+        function updateNoteOutput(message) {
+            noteOutput.textContent = message;
+        }
+
+        function updateDebugOutput(message) {
+            debugOutput.innerHTML = `<pre>${message}</pre>`;
+        }
+
         async function init() {
-            await setupCamera();
-            await loadModel();
-            initAudio();
-            runDetection();
+            try {
+                await setupCamera();
+                await loadModel();
+                await initMIDI();
+                isDetecting = true;
+                detectPose();
+            } catch (error) {
+                updateStatus(`Error de inicialización: ${error.message}`);
+            }
         }
 
         init();
